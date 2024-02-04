@@ -22,6 +22,24 @@ model.load_state_dict(torch.load('./model_weights/cpu_model.pth'))
 model.to(device)
 model.eval()
 
+
+def untargeted_obj(x, t_0):
+    '''
+    :param x: logits
+    :param t: original class
+    :return: return 
+    '''
+    N, _ = x.size()
+    val, ind = torch.topk(x, 2, dim=1)
+    f = torch.empty((N,))
+    for i in range(N):
+        t = t_0[i]
+        if ind[i][0] == t:
+            f[i] = val[i][0] - val[i][1]
+        else:
+            f[i] = val[i][t] - val[i][0]
+    return f
+
 # todo note below is an example of getting the Z(X) vector in the ZOO paper
 
 '''
@@ -41,7 +59,39 @@ def zoo_attack(network, image, t_0):
     :param t_0: real label
     :return: return a torch tensor (attack image) with size (1, 1, 32, 32)
     '''
+    # N batches of images having C channels with dimensions H x W
+    N, C, H, W = image.size()
 
+    # Choose a random pixel for each image in the batch
+    ind_h = torch.randint(0, H, (N,))
+    ind_w = torch.randint(0, W, (N,))
+    
+    # Track the optimal solution of delta
+    # For each pixel intensity, compute the value of obj. function
+    # when that level of intensity is added as perturbation to the input
+    delta_opt = None
+    for d in range(255):
+        image_ = image.clone()
+        if d == 0:
+            logits = network(image_)
+            delta_opt = untargeted_obj(logits, t_0)
+            continue
+        
+        d_ = torch.tensor(d/255, device=device)
+        for n in range(N):
+            x, y = ind_h[n], ind_w[n]
+            image_[n,0][x][y] += d_
+
+        logits = network(image_)
+        f = untargeted_obj(logits, t_0)
+        delta_opt  = torch.cat( (delta_opt, f), dim=-1 )
+    
+    adv_inds = torch.argmin(delta_opt.unsqueeze(0), dim=1)
+    for n in range(N):
+        i = adv_inds[n]
+        x, y = ind_h[n], ind_w[n]
+        image[n,0][x][y] += torch.tensor(i/255, device=device)
+    
     return image
 
 # test the performance of attack
