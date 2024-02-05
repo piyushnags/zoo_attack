@@ -133,13 +133,14 @@ def zoo_attack_adam(network, image, t_0):
     :param t_0: real label
     :return: return a torch tensor (attack image) with size (1, 1, 32, 32)
     '''
+    image = image.detach()
     N, C, H, W = image.size()
 
     # Params taken from ZOO paper: https://arxiv.org/pdf/1708.03999.pdf
     B = 128
     b1, b2, eps = 0.9, 0.999, 1e-8
-    M, v, T = torch.zeros((B, C, H, W), device=device), torch.zeros((B, C, H, W), device=device), torch.zeros((B, C, H, W), device=device)
-    M_, v_ = torch.zeros_like(M, device=device), torch.zeros_like(v, device=device)
+    M, v, T = torch.zeros((B, C, H, W)), torch.zeros((B, C, H, W)), torch.zeros((B, C, H, W))
+    M_, v_ = torch.zeros_like(M), torch.zeros_like(v)
     h = 1e-4
     eta = 1e-2
 
@@ -148,7 +149,7 @@ def zoo_attack_adam(network, image, t_0):
     img = image.clone()
     img = img.repeat(B, 1, 1, 1)
     steps = 0
-    while untargeted_obj(logits, t_0) >= 0:
+    while (untargeted_obj(logits, t_0) >= 0):
         # Choose random indices for each image in the batch
         ind_h = torch.randint(0, H, (B,))
         ind_w = torch.randint(0, W, (B,))
@@ -162,7 +163,7 @@ def zoo_attack_adam(network, image, t_0):
             T[i,0,x,y] += 1
         
         # Compute approximate gradients, dim of gi = (B,)
-        f2, f1 = compute_loss(network(img+ei), t_0), compute_loss(network(img-ei), t_0)
+        f2, f1 = compute_loss(network(img+ei), t_0).detach(), compute_loss(network(img-ei), t_0).detach()
         gi = (f2-f1)/(2*h)
 
         # Update adam parameters and compute delta * for each image clone
@@ -173,14 +174,14 @@ def zoo_attack_adam(network, image, t_0):
             M_[i,0,x,y] = M[i,0,x,y]/(1-torch.pow(b1, T[i,0,x,y]))
             v_[i,0,x,y] = v[i,0,x,y]/(1-torch.pow(b2, T[i,0,x,y]))
             del_star = (-eta*M_[i,0,x,y])/(torch.sqrt(v_[i,0,x,y])+eps)
-            img[i,0,x,y] += del_star
+            image[0,0,x,y] += del_star
         
-        img = torch.clamp(img, 0, 1)
-        logits = network(img)
+        image = torch.clamp(image, 0, 1)
+        logits = network(image)
         steps += 1
-
+    
     print(f'{steps} steps taken to generate adversarial image')
-    return img
+    return image
 
 # test the performance of attack
 testloader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=False, num_workers=8)
@@ -196,13 +197,13 @@ exp_no = 0
 exp_path = None
 if not os.path.exists('results/'):
     os.makedirs('results/')
-    while True:
-        if os.path.exists(f'results/exp_{exp_no}'):
-            exp_no += 1
-        else:
-            exp_path = f'results/exp_{exp_no}'
-            os.makedirs(exp_path)   
-            break         
+while True:
+    if os.path.exists(f'results/exp_{exp_no}'):
+        exp_no += 1
+    else:
+        exp_path = f'results/exp_{exp_no}'
+        os.makedirs(exp_path)   
+        break     
 
 total = 0
 success = 0
@@ -224,8 +225,8 @@ for i, (images, labels) in tqdm(enumerate(testloader)):
     adv_output = model(adv_image)
     _, adv_pred = adv_output.max(1)
     if adv_pred.item() != labels.item():
-        plt.imsave( os.path.join(exp_path, f'adv_img_{success+1}.png'), adv_image.squeeze().cpu() )
-        plt.imsave( os.path.join(exp_path, f'clean_img_{success+1}.png'), images.squeeze().cpu() )
+        plt.imsave( os.path.join(exp_path, f'adv_img_{success+1}.png'), adv_image.squeeze().cpu(), cmap='gray' )
+        plt.imsave( os.path.join(exp_path, f'clean_img_{success+1}.png'), images.squeeze().cpu(), cmap='gray' )
         print(labels)
         success += 1
 
