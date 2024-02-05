@@ -33,12 +33,30 @@ def untargeted_obj(x, t_0):
     '''
     val, ind = torch.topk(x, 2, dim=1)
     val, ind = val.squeeze(), ind.squeeze()
-    # print(val)
     t = t_0.item()
     if ind[0] == t:
         return torch.tensor([val[0] - val[1]])
     else:
         return torch.tensor([x[0][t] - val[0]])
+
+
+def compute_loss(x, t_0):
+    '''
+    hinge-like loss function to evaluate strength
+    of adversarial example
+    '''
+    B, _ = x.size()
+    val, ind = torch.topk(x, 2, dim=1)
+    t = t_0.item()
+    f = torch.zeros((B,))
+    for b in range(B):
+        if ind[b][0] == t:
+            f[b] = val[b][0] - val[b][1]
+        else:
+            f[b] = torch.tensor(0)
+    
+    return f
+
 
 # todo note below is an example of getting the Z(X) vector in the ZOO paper
 
@@ -98,13 +116,15 @@ def zoo_attack_naive(network, image, t_0):
             x, y = ind_h[n], ind_w[n]
             i_ = torch.tensor(i/255, device=device).detach()
             image[n,0][x][y] += i_
+
+        image = torch.clamp(image, 0, 1)
         step += 1
     
     print(f'{step} number of steps taken to generate adversarial image')
     return image
 
 
-def zoo_attack(network, image, t_0):
+def zoo_attack_adam(network, image, t_0):
     '''
 
     #todo you are required to complete this part
@@ -113,8 +133,54 @@ def zoo_attack(network, image, t_0):
     :param t_0: real label
     :return: return a torch tensor (attack image) with size (1, 1, 32, 32)
     '''
-    
-    return image
+    N, C, H, W = image.size()
+
+    # Params taken from ZOO paper: https://arxiv.org/pdf/1708.03999.pdf
+    B = 128
+    b1, b2, eps = 0.9, 0.999, 1e-8
+    M, v, T = torch.zeros((B, C, H, W), device=device), torch.zeros((B, C, H, W), device=device), torch.zeros((B, C, H, W), device=device)
+    M_, v_ = torch.zeros_like(M, device=device), torch.zeros_like(v, device=device)
+    h = 1e-4
+    eta = 1e-2
+
+    logits = network(image)
+    # Create a batch to compute gradients of multiple pixels
+    img = image.clone()
+    img = img.repeat(B, 1, 1, 1)
+    steps = 0
+    while untargeted_obj(logits, t_0) >= 0:
+        # Choose random indices for each image in the batch
+        ind_h = torch.randint(0, H, (B,))
+        ind_w = torch.randint(0, W, (B,))
+
+        # Initialize the standard basis vectors with h at chosen
+        # indices
+        ei = torch.zeros_like(img, device=device)
+        for i in range(B):
+            x, y = ind_h[i], ind_w[i]
+            ei[i,0,x,y] += h
+            T[i,0,x,y] += 1
+        
+        # Compute approximate gradients, dim of gi = (B,)
+        f2, f1 = compute_loss(network(img+ei), t_0), compute_loss(network(img-ei), t_0)
+        gi = (f2-f1)/(2*h)
+
+        # Update adam parameters and compute delta * for each image clone
+        for i in range(B):
+            x, y = ind_h[i], ind_w[i]
+            M[i,0,x,y] = b1*M[i,0,x,y] + (1-b1)*gi[i]
+            v[i,0,x,y] = b2*v[i,0,x,y] + (1-b2)*torch.square(gi[i])
+            M_[i,0,x,y] = M[i,0,x,y]/(1-torch.pow(b1, T[i,0,x,y]))
+            v_[i,0,x,y] = v[i,0,x,y]/(1-torch.pow(b2, T[i,0,x,y]))
+            del_star = (-eta*M_[i,0,x,y])/(torch.sqrt(v_[i,0,x,y])+eps)
+            img[i,0,x,y] += del_star
+        
+        img = torch.clamp(img, 0, 1)
+        logits = network(img)
+        steps += 1
+
+    print(f'{steps} steps taken to generate adversarial image')
+    return img
 
 # test the performance of attack
 testloader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=False, num_workers=8)
@@ -153,7 +219,7 @@ for i, (images, labels) in tqdm(enumerate(testloader)):
     total += 1
 
     #adv_image = zoo_attack(network=model, image=images, target=target_label)
-    adv_image = zoo_attack_naive(network=model, image=images, t_0=labels)
+    adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
     adv_image = adv_image.to(device)
     adv_output = model(adv_image)
     _, adv_pred = adv_output.max(1)
