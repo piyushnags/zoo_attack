@@ -124,6 +124,66 @@ def zoo_attack_naive(network, image, t_0):
     return image
 
 
+def zoo_attack_subset(network, image, t_0):
+    '''
+
+    #todo you are required to complete this part
+    :param network: the model
+    :param image: one image with size: (1, 1, 32, 32) type: torch.Tensor()
+    :param t_0: real label
+    :return: return a torch tensor (attack image) with size (1, 1, 32, 32)
+    '''
+    # N = 1 batches of images having C channels with dimensions H x W
+    N, C, H, W = image.size()
+
+    # Initialize counter to track number of iterations
+    # needed to converge
+    step = 0
+    while untargeted_obj(network(image), t_0) >= 0:
+
+        # Choose a random pixel in the image
+        ind_h = torch.randint(0, H, (N,))
+        ind_w = torch.randint(0, W, (N,))
+        
+        # Track the optimal solution of delta
+        # For each pixel intensity, compute the value of obj. function
+        # when that level of intensity is added as perturbation to the image at chosen
+        # pixel location
+        delta_opt = None
+        xi = image[0][0][ind_h[0]][ind_w[0]]
+        upper = torch.tensor((xi + 15/255), device=device).detach() if ((xi+255)<=1) else torch.tensor(1, device=device).detach()
+        lower = torch.tensor((xi - 15/255), device=device).detach() if ((xi+255)>=0) else torch.tensor(0, device=device).detach()
+        d_ = torch.tensor(lower, device=device).detach()
+        for d in range(31):
+            if d_ > upper:
+                break
+            image_ = image.clone()
+            for n in range(N):
+                x, y = ind_h[n], ind_w[n]
+                image_[n,0][x][y] += d_
+
+            d_ += torch.tensor(1/255, device=device)
+            logits = network(image_)
+            f = untargeted_obj(logits, t_0)
+            if d == 0:
+                delta_opt = f
+            else:
+                delta_opt  = torch.cat( (delta_opt, f), dim=-1 )
+        
+        adv_inds = torch.argmin(delta_opt.unsqueeze(0), dim=1)
+        for n in range(N):
+            i = adv_inds[n]
+            x, y = ind_h[n], ind_w[n]
+            i_ = torch.tensor(i/255+lower, device=device).detach()
+            image[n,0][x][y] += i_
+
+        image = torch.clamp(image, 0, 1)
+        step += 1
+    
+    print(f'{step} number of steps taken to generate adversarial image')
+    return image
+
+
 def zoo_attack_adam(network, image, t_0):
     '''
 
@@ -227,7 +287,8 @@ for i, (images, labels) in tqdm(enumerate(testloader)):
     if adv_pred.item() != labels.item():
         plt.imsave( os.path.join(exp_path, f'adv_img_{success+1}.png'), adv_image.squeeze().cpu(), cmap='gray' )
         plt.imsave( os.path.join(exp_path, f'clean_img_{success+1}.png'), images.squeeze().cpu(), cmap='gray' )
-        print(labels)
+        print(f'Original label: {labels}')
+        print(f'Predicted label: {adv_pred}')
         success += 1
 
     if total >= num_image:
