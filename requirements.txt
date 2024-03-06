@@ -3,3 +3,4 @@ torchvision
 gdown
 tqdm
 matplotlib
+opencv-python

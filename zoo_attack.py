@@ -1,9 +1,14 @@
+from typing import Any
+from argparse import ArgumentParser
 import torch
 import matplotlib.pyplot as plt
 import random, os
 from CNN.resnet import ResNet18
 from load_data import load_data
 from tqdm import tqdm
+import cv2
+
+from utils import *
 #import torch.backends.cudnn as cudnn
 
 
@@ -23,39 +28,6 @@ model.load_state_dict(torch.load('./model_weights/cpu_model.pth'))
 
 model.to(device)
 model.eval()
-
-
-def untargeted_obj(x, t_0):
-    '''
-    :param x: logits
-    :param t: original class
-    :return: return 
-    '''
-    val, ind = torch.topk(x, 2, dim=1)
-    val, ind = val.squeeze(), ind.squeeze()
-    t = t_0.item()
-    if ind[0] == t:
-        return torch.tensor([val[0] - val[1]])
-    else:
-        return torch.tensor([x[0][t] - val[0]])
-
-
-def compute_loss(x, t_0):
-    '''
-    hinge-like loss function to evaluate strength
-    of adversarial example
-    '''
-    B, _ = x.size()
-    val, ind = torch.topk(x, 2, dim=1)
-    t = t_0.item()
-    f = torch.zeros((B,))
-    for b in range(B):
-        if ind[b][0] == t:
-            f[b] = val[b][0] - val[b][1]
-        else:
-            f[b] = torch.tensor(0)
-    
-    return f
 
 
 # todo note below is an example of getting the Z(X) vector in the ZOO paper
@@ -83,7 +55,7 @@ def zoo_attack_naive(network, image, t_0):
     # Initialize counter to track number of iterations
     # needed to converge
     step = 0
-    while untargeted_obj(network(image), t_0) >= 0:
+    while (untargeted_obj(network(image), t_0) >= 0) and (step <= 50):
 
         # Choose a random pixel in the image
         ind_h = torch.randint(0, H, (N,))
@@ -209,7 +181,7 @@ def zoo_attack_adam(network, image, t_0):
     img = image.clone()
     img = img.repeat(B, 1, 1, 1)
     steps = 0
-    while (untargeted_obj(logits, t_0) >= 0):
+    while (untargeted_obj(logits, t_0) >= 0) and (steps <= 200):
         # Choose random indices for each image in the batch
         ind_h = torch.randint(0, H, (B,))
         ind_w = torch.randint(0, W, (B,))
@@ -253,48 +225,168 @@ def get_target(labels):
     return torch.tensor([a])
 
 
-exp_no = 0
-exp_path = None
-if not os.path.exists('results/'):
-    os.makedirs('results/')
-while True:
-    if os.path.exists(f'results/exp_{exp_no}'):
-        exp_no += 1
+def run_zoo_attack():
+    exp_no = 0
+    exp_path = None
+    if not os.path.exists('results/'):
+        os.makedirs('results/')
+    while True:
+        if os.path.exists(f'results/exp_{exp_no}'):
+            exp_no += 1
+        else:
+            exp_path = f'results/exp_{exp_no}'
+            os.makedirs(exp_path)   
+            break     
+
+    total = 0
+    success = 0
+    num_image = 10 # number of images to be attacked
+
+    for i, (images, labels) in tqdm(enumerate(testloader)):
+        target_label = get_target(labels)
+        images, labels = images.to(device), labels.to(device)
+        outputs = model(images)
+        _, predicted = outputs.max(1)
+        if predicted.item() != labels.item():
+            continue
+
+        total += 1
+
+        #adv_image = zoo_attack(network=model, image=images, target=target_label)
+        adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
+        adv_image = adv_image.to(device)
+        adv_output = model(adv_image)
+        _, adv_pred = adv_output.max(1)
+        if adv_pred.item() != labels.item():
+            plt.imsave( os.path.join(exp_path, f'adv_img_{success+1}.png'), adv_image.squeeze().cpu(), cmap='gray' )
+            plt.imsave( os.path.join(exp_path, f'clean_img_{success+1}.png'), images.squeeze().cpu(), cmap='gray' )
+            print(f'Original label: {labels}')
+            print(f'Predicted label: {adv_pred}')
+            success += 1
+
+        if total >= num_image:
+            break
+
+    print('success rate : %.4f'%(success/total))
+
+
+def detector(x: torch.Tensor, t: float, gamma: int) -> bool:
+    '''
+    Description: detector function based on white-region counting defense
+    Inputs:
+        x: Image (cpu)
+        t: threshold value for making binary image
+        gamma: white region threshold
+    Output:
+        True if image is adversarially generated, false otherwise
+    '''
+    cpu = torch.device('cpu')
+    x = threshold(x, t).to(cpu)
+    # x = x.to(cpu)
+
+    # convert to numpy
+    x = float_to_uint8(x)
+    x = x.squeeze().numpy()
+
+    # count number of CCs (includes BG)
+    ret, labels = cv2.connectedComponents(x)
+    num_cc = len(torch.unique( torch.from_numpy(labels) )) - 1
+
+    if num_cc <= gamma:
+        return False
     else:
-        exp_path = f'results/exp_{exp_no}'
-        os.makedirs(exp_path)   
-        break     
-
-total = 0
-success = 0
-num_image = 10 # number of images to be attacked
-
-for i, (images, labels) in tqdm(enumerate(testloader)):
-    target_label = get_target(labels)
-    images, labels = images.to(device), labels.to(device)
-    outputs = model(images)
-    _, predicted = outputs.max(1)
-    if predicted.item() != labels.item():
-        continue
-
-    total += 1
-
-    #adv_image = zoo_attack(network=model, image=images, target=target_label)
-    adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
-    adv_image = adv_image.to(device)
-    adv_output = model(adv_image)
-    _, adv_pred = adv_output.max(1)
-    if adv_pred.item() != labels.item():
-        plt.imsave( os.path.join(exp_path, f'adv_img_{success+1}.png'), adv_image.squeeze().cpu(), cmap='gray' )
-        plt.imsave( os.path.join(exp_path, f'clean_img_{success+1}.png'), images.squeeze().cpu(), cmap='gray' )
-        print(f'Original label: {labels}')
-        print(f'Predicted label: {adv_pred}')
-        success += 1
-
-    if total >= num_image:
-        break
-
-print('success rate : %.4f'%(success/total))
+        return True
 
 
+def run_zoo_defense(args: Any):
+    exp_no, exp_path = create_exp_dir()     
 
+    total = 0
+    att_total = 0
+    success = 0
+    num_image = 55 # number of images to be attacked
+    tp = 0
+    tn = 0
+    fp = 0
+    fn = 0
+    t, gamma = args.t, args.gamma
+
+    for i, (images, labels) in tqdm(enumerate(testloader)):
+        target_label = get_target(labels)
+        images, labels = images.to(device), labels.to(device)
+        outputs = model(images)
+        _, predicted = outputs.max(1)
+        if predicted.item() != labels.item():
+            continue
+
+        total += 1
+
+        # Use ZOO to generate a perturbed image, not guaranteed to succeed everytime!
+        if total % 2 != 0:
+            att_total += 1
+            adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
+            # adv_image = zoo_attack_naive(network=model, image=images, t_0=labels)
+            adv_image = adv_image.to(device)
+
+            is_adv = detector(adv_image, t=t, gamma=gamma)
+            adv_output = model(adv_image)
+            _, adv_pred = adv_output.max(1)
+
+            # Detected as adv and img is misclassified
+            if is_adv and (adv_pred.item() != labels.item()):
+                tp += 1
+            # Detected as adv but img is correctly classified
+            elif is_adv and (adv_pred.item() == labels.item()):
+                fp += 1
+            # Detected as benign but img is adversarial
+            elif (not is_adv) and (adv_pred.item() != labels.item()):
+                fn += 1
+                success += 1
+            # Detected as benign and img is correctly classified
+            else:
+                tn += 1
+        
+        # Clean image, only 2 cases
+        else:
+            if detector(images, t=t, gamma=gamma):
+                fp += 1
+            else:
+                tn += 1
+        
+        if total >= num_image:
+            break
+
+    print('success rate : %.4f'%(success/att_total))
+    print(f'tp: {tp}, fp: {fp}, tn: {tn}, fn: {fn}, total: {total}')
+    stats = {
+        'tp': tp,
+        'fp': fp,
+        'tn': tn,
+        'fn': fn,
+        'total': total,
+        'success': success,
+        't': t,
+        'gamma': gamma,
+    }
+    log_dir = 'logs3/'
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)    
+
+    torch.save(stats, os.path.join(log_dir, f'exp_{exp_no}_stats.pth'))
+
+
+
+if __name__ == '__main__':
+    # run_zoo_defense()
+    # x = test_set[0][0].unsqueeze(0)
+    # plt.imsave('test.png', x.squeeze(), cmap='gray' )
+    # detector(x)
+    parser = ArgumentParser()
+    parser.add_argument('--t', type=float, default=0.1, help='Threshold intensity [0,1]')
+    parser.add_argument('--gamma', type=int, default=2, help='Max number of white regions/connected components')
+    args = parser.parse_args()
+    run_zoo_defense(args)
+
+    # for f in list(os.listdir('logs3/')):
+    #     s = torch.load(os.path.join('logs3/', f))
+    #     print(s)

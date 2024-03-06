@@ -2,3 +2,5 @@
 data/
 model_weights/
 results/
+logs*/
+__pycache__/
