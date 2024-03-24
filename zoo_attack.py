@@ -55,7 +55,7 @@ def zoo_attack_naive(network, image, t_0):
     # Initialize counter to track number of iterations
     # needed to converge
     step = 0
-    while (untargeted_obj(network(image), t_0) >= 0) and (step <= 50):
+    while (untargeted_obj(network(image), t_0) >= 0) and (step <= 150):
 
         # Choose a random pixel in the image
         ind_h = torch.randint(0, H, (N,))
@@ -281,8 +281,8 @@ def detector(x: torch.Tensor, t: float, gamma: int) -> bool:
         True if image is adversarially generated, false otherwise
     '''
     cpu = torch.device('cpu')
-    x = threshold(x, t).to(cpu)
-    # x = x.to(cpu)
+    # x = threshold(x, t).to(cpu)
+    x = x.to(cpu)
 
     # convert to numpy
     x = float_to_uint8(x)
@@ -324,8 +324,8 @@ def run_zoo_defense(args: Any):
         # Use ZOO to generate a perturbed image, not guaranteed to succeed everytime!
         if total % 2 != 0:
             att_total += 1
-            adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
-            # adv_image = zoo_attack_naive(network=model, image=images, t_0=labels)
+            # adv_image = zoo_attack_adam(network=model, image=images, t_0=labels)
+            adv_image = zoo_attack_naive(network=model, image=images, t_0=labels)
             adv_image = adv_image.to(device)
 
             is_adv = detector(adv_image, t=t, gamma=gamma)
@@ -368,7 +368,7 @@ def run_zoo_defense(args: Any):
         't': t,
         'gamma': gamma,
     }
-    log_dir = 'logs3/'
+    log_dir = 'logs4/'
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)    
 
